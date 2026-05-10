@@ -1,0 +1,78 @@
+"""
+Evaluation metrics for the prediction task.
+
+Primary metric: macro-F1 (the data are imbalanced toward stationary)
+Secondary: balanced accuracy, ROC-AUC (one-vs-rest for up and down)
+
+Provides both global metrics and per-regime breakdowns.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    roc_auc_score,
+)
+
+
+def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray | None = None) -> dict:
+    """Return a dict of evaluation metrics.
+
+    y_true, y_pred: arrays in {-1, 0, +1}
+    y_proba: (n, 3) array with columns [P(-1), P(0), P(+1)], optional
+    """
+    out = {
+        "n": int(len(y_true)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        "balanced_acc": float(balanced_accuracy_score(y_true, y_pred)),
+        "f1_down": float(f1_score(y_true, y_pred, labels=[-1], average="macro", zero_division=0)),
+        "f1_stat": float(f1_score(y_true, y_pred, labels=[0], average="macro", zero_division=0)),
+        "f1_up": float(f1_score(y_true, y_pred, labels=[1], average="macro", zero_division=0)),
+    }
+    if y_proba is not None and len(np.unique(y_true)) > 1:
+        # one-vs-rest AUC for up and down classes
+        try:
+            out["auc_up"] = float(roc_auc_score((y_true == 1).astype(int), y_proba[:, 2]))
+        except ValueError:
+            out["auc_up"] = float("nan")
+        try:
+            out["auc_down"] = float(roc_auc_score((y_true == -1).astype(int), y_proba[:, 0]))
+        except ValueError:
+            out["auc_down"] = float("nan")
+    else:
+        out["auc_up"] = float("nan")
+        out["auc_down"] = float("nan")
+    return out
+
+
+def per_regime_metrics(
+    y_true: np.ndarray, y_pred: np.ndarray, regimes: np.ndarray,
+) -> pd.DataFrame:
+    """Compute per-regime macro-F1 and class distribution."""
+    rows = []
+    for r in sorted(np.unique(regimes)):
+        mask = regimes == r
+        if mask.sum() == 0:
+            continue
+        rows.append({
+            "regime": int(r),
+            "n_test": int(mask.sum()),
+            "macro_f1": float(f1_score(y_true[mask], y_pred[mask],
+                                       average="macro", zero_division=0)),
+            "balanced_acc": float(balanced_accuracy_score(y_true[mask], y_pred[mask])),
+            "frac_down": float((y_true[mask] == -1).mean()),
+            "frac_stat": float((y_true[mask] == 0).mean()),
+            "frac_up": float((y_true[mask] == 1).mean()),
+        })
+    return pd.DataFrame(rows)
+
+
+def confusion_df(y_true: np.ndarray, y_pred: np.ndarray) -> pd.DataFrame:
+    cm = confusion_matrix(y_true, y_pred, labels=[-1, 0, 1])
+    return pd.DataFrame(cm, index=["true_-1", "true_0", "true_+1"],
+                        columns=["pred_-1", "pred_0", "pred_+1"])
